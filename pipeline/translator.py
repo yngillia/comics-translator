@@ -1,10 +1,9 @@
-# pipeline/translator.py
 import requests
+
 
 class ComicTranslator:
     def __init__(self, colab_url: str):
         self.colab_url = colab_url.rstrip("/")
-        print(f"Translator підключено до Colab: {self.colab_url}")
 
     def translate_bubbles(self, bubbles: list[dict]) -> list[dict]:
         if not bubbles:
@@ -13,7 +12,7 @@ class ComicTranslator:
         r = requests.post(
             f"{self.colab_url}/translate",
             json={"bubbles": bubbles},
-            timeout=120, # Даємо більше часу, бо генерація тексту може бути довгою
+            timeout=120,
             headers={"ngrok-skip-browser-warning": "true"}
         )
         r.raise_for_status()

@@ -9,6 +9,7 @@ import config
 def _get_font_path() -> str:
     if os.name == "nt" and os.path.exists(config.FONT_PATH_WIN):
         return config.FONT_PATH_WIN
+    return config.FONT_PATH_LINUX
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont:

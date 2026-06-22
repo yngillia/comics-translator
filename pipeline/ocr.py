@@ -1,14 +1,11 @@
-# pipeline/ocr.py
 import requests
 import base64
 from pathlib import Path
 
 
 class ComicOCR:
-    def __init__(self, api_key: str = "", ocr_engine: str = "easyocr",
-                 colab_url: str = ""):
+    def __init__(self, colab_url: str = ""):
         self.colab_url = colab_url.rstrip("/") if colab_url else ""
-        print(f"OCR ініціалізовано: easyocr (Colab) → {self.colab_url}")
 
     def extract(self, image_path: str) -> list[dict]:
         path = Path(image_path)
@@ -24,7 +21,7 @@ class ComicOCR:
             f"{self.colab_url}/ocr",
             json={"image": encoded},
             timeout=60,
-            headers = {"ngrok-skip-browser-warning": "true"}
+            headers={"ngrok-skip-browser-warning": "true"}
         )
         r.raise_for_status()
         data = r.json()
