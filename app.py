@@ -1,10 +1,20 @@
+import sys
+import os
+
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+if sys.stdin is None:
+    sys.stdin = open(os.devnull, "r")
+
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, scrolledtext
 from PIL import Image, ImageDraw, ImageTk, ImageSequence
 import threading
-import os
 import time
+import logging
 
 import config
 
@@ -12,26 +22,47 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 
-# Генерація спінера якщо файл відсутній
-def _ensure_spinner_gif():
-    if os.path.exists(config.SPINNER_GIF):
-        return
-    os.makedirs(config.ASSETS_DIR, exist_ok=True)
-    SIZE, FRAMES    = 24, 12
-    ARC_COLOR       = (114, 137, 218)
-    TRAIL_COLOR     = (60, 60, 90)
-    frames = []
-    for i in range(FRAMES):
-        img  = Image.new("RGBA", (SIZE, SIZE), (20, 20, 35, 0))
-        draw = ImageDraw.Draw(img)
-        angle = (i / FRAMES) * 360
-        draw.arc([2, 2, SIZE - 3, SIZE - 3], 0, 360,            fill=TRAIL_COLOR, width=3)
-        draw.arc([2, 2, SIZE - 3, SIZE - 3], angle, angle + 90, fill=ARC_COLOR,   width=3)
-        frames.append(img.convert("RGBA"))
-    frames[0].save(
-        config.SPINNER_GIF, save_all=True, append_images=frames[1:],
-        loop=0, duration=60, disposal=2,
-    )
+# Логер застосунку
+_log_handler: "LogHandler | None" = None
+
+
+class LogHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self._buffer: list[str] = []
+        self._widget: scrolledtext.ScrolledText | None = None
+
+    def emit(self, record: logging.LogRecord):
+        msg = self.format(record) + "\n"
+        self._buffer.append(msg)
+        if self._widget:
+            try:
+                self._widget.configure(state="normal")
+                self._widget.insert("end", msg)
+                self._widget.see("end")
+                self._widget.configure(state="disabled")
+            except Exception:
+                pass
+
+    def attach(self, widget: scrolledtext.ScrolledText):
+        self._widget = widget
+        widget.configure(state="normal")
+        widget.insert("end", "".join(self._buffer))
+        widget.see("end")
+        widget.configure(state="disabled")
+
+
+def _setup_logger() -> logging.Logger:
+    global _log_handler
+    logger = logging.getLogger("comics_translator")
+    logger.setLevel(logging.DEBUG)
+    _log_handler = LogHandler()
+    _log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
+    logger.addHandler(_log_handler)
+    return logger
+
+
+log = _setup_logger()
 
 
 # Клас стану зображення
@@ -54,10 +85,10 @@ class ImageState:
 # Клас стану завдання
 class TaskState:
     def __init__(self):
-        self.running:    bool  = False
-        self.start_time: float = 0.0
-        self.spinner_idx: int  = 0
-        self.tick_id           = None
+        self.running:     bool  = False
+        self.start_time:  float = 0.0
+        self.spinner_idx: int   = 0
+        self.tick_id            = None
 
     def start(self):
         self.running     = True
@@ -112,11 +143,12 @@ class ComicsTranslatorApp(ctk.CTk):
         self.minsize(*config.WINDOW_MINSIZE)
 
         # Стан програми
-        self.image_state    = ImageState()
-        self.task_state     = TaskState()
-        self.pipeline_state = PipelineState()
+        self.image_state     = ImageState()
+        self.task_state      = TaskState()
+        self.pipeline_state  = PipelineState()
         self.bubbles: list[dict] = []
-        self._current_tab: str   = "main"
+        self._current_tab:   str  = "main"
+        self._advanced_mode: bool = False
 
         self._load_icons()
         self._load_spinner_frames()
@@ -146,15 +178,34 @@ class ComicsTranslatorApp(ctk.CTk):
         self.icon_error    = _ctk_icon(config.ICON_ERROR,    (16, 16))
 
     def _load_spinner_frames(self):
-        _ensure_spinner_gif()
         self.spinner_frames: list[ctk.CTkImage] = []
+        if not os.path.exists(config.SPINNER_GIF):
+            self._generate_spinner_gif()
         try:
             gif = Image.open(config.SPINNER_GIF)
             for frame in ImageSequence.Iterator(gif):
                 img = frame.copy().convert("RGBA").resize((20, 20), Image.Resampling.LANCZOS)
                 self.spinner_frames.append(ctk.CTkImage(light_image=img, dark_image=img, size=(20, 20)))
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Spinner GIF не завантажено: %s", exc)
+
+    def _generate_spinner_gif(self):
+        os.makedirs(config.ASSETS_DIR, exist_ok=True)
+        SIZE, FRAMES = 24, 12
+        ARC_COLOR    = (114, 137, 218)
+        TRAIL_COLOR  = (60, 60, 90)
+        frames = []
+        for i in range(FRAMES):
+            img  = Image.new("RGBA", (SIZE, SIZE), (20, 20, 35, 0))
+            draw = ImageDraw.Draw(img)
+            angle = (i / FRAMES) * 360
+            draw.arc([2, 2, SIZE - 3, SIZE - 3], 0, 360,            fill=TRAIL_COLOR, width=3)
+            draw.arc([2, 2, SIZE - 3, SIZE - 3], angle, angle + 90, fill=ARC_COLOR,   width=3)
+            frames.append(img.convert("RGBA"))
+        frames[0].save(
+            config.SPINNER_GIF, save_all=True, append_images=frames[1:],
+            loop=0, duration=60, disposal=2,
+        )
 
     # Побудова інтерфейсу
 
@@ -169,7 +220,7 @@ class ComicsTranslatorApp(ctk.CTk):
         self.taskbar.pack_propagate(False)
 
         self.status_label = ctk.CTkLabel(
-            self.taskbar, text="Ready",
+            self.taskbar, text="Готовий до роботи!",
             font=("Segoe UI", 12), text_color="#a2a2d0"
         )
         self.status_label.pack(side="left", padx=15)
@@ -216,16 +267,28 @@ class ComicsTranslatorApp(ctk.CTk):
         self.main_tab = ctk.CTkFrame(self.left_panel, fg_color="transparent")
         self.main_tab.pack(fill="both", expand=True)
 
+        # Проста версія
+        self.simple_panel = ctk.CTkFrame(self.main_tab, fg_color="transparent")
+        self.btn_run = self._make_button(
+            self.simple_panel, "Перекласти сторінку", self.run_full_pipeline,
+            color=("#1d3557", "#132237"), state="disabled"
+        )
+
+        # Розширена версія
+        self.advanced_panel = ctk.CTkFrame(self.main_tab, fg_color="transparent")
+        self.btn_ocr   = self._make_button(self.advanced_panel, "Запустити OCR", self.run_ocr,
+                                            color=("#1d3557", "#132237"), state="disabled")
+        self.btn_trans = self._make_button(self.advanced_panel, "Перекласти репліки", self.run_translate,
+                                            color=("#1d3557", "#132237"), state="disabled")
+
         self.btn_open  = self._make_button(self.main_tab, "Відкрити сторінку",  self.load_image)
-        self.btn_ocr   = self._make_button(self.main_tab, "Запустити OCR",       self.run_ocr,
-                                            color=("#1d3557", "#132237"), state="disabled")
-        self.btn_trans = self._make_button(self.main_tab, "Перекласти репліки",  self.run_translate,
-                                            color=("#1d3557", "#132237"), state="disabled")
         self.btn_save  = self._make_button(self.main_tab, "Зберегти результат",  self.save_result,
                                             color=("#6b4226", "#4a2c17"), state="disabled")
         self.btn_reset = self._make_button(self.main_tab, "Скинути все",          self.reset_all,
                                             color="transparent", state="disabled")
         self.btn_reset.configure(border_width=1)
+
+        self.simple_panel.pack(fill="x", before=self.btn_open)
 
         self.toggle_var = ctk.BooleanVar(value=False)
         self.toggle = ctk.CTkSwitch(
@@ -238,7 +301,7 @@ class ComicsTranslatorApp(ctk.CTk):
         self.toggle.pack(padx=15, pady=15, fill="x")
 
         ctk.CTkLabel(
-            self.main_tab, text="Текстовий лог:",
+            self.main_tab, text="Текстовий вивід:",
             font=("Segoe UI", 11, "bold"), text_color="gray"
         ).pack(padx=15, anchor="w")
 
@@ -256,10 +319,10 @@ class ComicsTranslatorApp(ctk.CTk):
             font=("Segoe UI", 14, "bold")
         ).pack(padx=15, pady=(20, 4), anchor="w")
 
-        ctk.CTkFrame(self.settings_tab, height=1, fg_color="#333").pack(fill="x", padx=15, pady=(0, 16))
+        ctk.CTkFrame(self.settings_tab, height=1, fg_color="#333").pack(fill="x", padx=15, pady=(0, 12))
 
         ctk.CTkLabel(
-            self.settings_tab, text="Remote Server URL:",
+            self.settings_tab, text="Посилання на сервер:",
             font=("Segoe UI", 11), text_color="gray"
         ).pack(padx=15, anchor="w")
 
@@ -268,29 +331,57 @@ class ComicsTranslatorApp(ctk.CTk):
             placeholder_text="https://xxxx.ngrok-free.app",
             font=("Segoe UI", 11), height=34
         )
-        self.url_entry.pack(padx=15, pady=(4, 6), fill="x")
+        self.url_entry.pack(padx=15, pady=(4, 4), fill="x")
         self._load_config_url()
 
         ctk.CTkLabel(
             self.settings_tab,
-            text="Вставте посилання на запущений\nColab-сервер з моделлю Dragoman.",
+            text="Вставте посилання на запущений\nсервер з моделлю перекладу.",
             font=("Segoe UI", 10), text_color="gray", justify="left"
         ).pack(padx=15, anchor="w")
 
-        ctk.CTkFrame(self.settings_tab, height=1, fg_color="#333").pack(fill="x", padx=15, pady=16)
-
         self.save_url_btn = ctk.CTkButton(
-            self.settings_tab, text="Зберегти URL",
-            height=36, font=("Segoe UI", 12, "bold"),
+            self.settings_tab, text="Зберегти посилання",
+            height=34, font=("Segoe UI", 11, "bold"),
             command=self._save_url,
         )
-        self.save_url_btn.pack(padx=15, fill="x")
+        self.save_url_btn.pack(padx=15, pady=(8, 2), fill="x")
 
         self.url_status = ctk.CTkLabel(
             self.settings_tab, text="",
             font=("Segoe UI", 10), text_color="#4cc9f0"
         )
-        self.url_status.pack(padx=15, pady=(6, 0), anchor="w")
+        self.url_status.pack(padx=15, pady=(0, 4), anchor="w")
+
+        ctk.CTkLabel(
+            self.settings_tab, text="Режим інтерфейсу:",
+            font=("Segoe UI", 11), text_color="gray"
+        ).pack(padx=15, pady=(4, 0), anchor="w")
+
+        self.mode_var = ctk.BooleanVar(value=False)
+        self.mode_switch = ctk.CTkSwitch(
+            self.settings_tab,
+            text="Розширений режим",
+            variable=self.mode_var,
+            command=self._on_mode_toggle,
+            font=("Segoe UI", 11),
+        )
+        self.mode_switch.pack(padx=15, pady=(4, 2), anchor="w")
+
+        ctk.CTkLabel(
+            self.settings_tab,
+            text="Простий: одна кнопка запуску.\nРозширений: OCR та переклад окремо.",
+            font=("Segoe UI", 10), text_color="gray", justify="left"
+        ).pack(padx=15, anchor="w")
+
+        ctk.CTkFrame(self.settings_tab, height=1, fg_color="#333").pack(fill="x", padx=15, pady=(12, 12))
+
+        ctk.CTkButton(
+            self.settings_tab, text="Відкрити лог",
+            height=34, font=("Segoe UI", 11, "bold"),
+            fg_color=("#3a0ca3", "#3f37c9"),
+            command=self._open_log_window,
+        ).pack(padx=15, fill="x")
 
     def _build_canvas_panel(self):
         right_panel = ctk.CTkFrame(self, corner_radius=10)
@@ -301,69 +392,78 @@ class ComicsTranslatorApp(ctk.CTk):
         self.canvas = tk.Canvas(right_panel, bg=config.CANVAS_BG, highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
-        v_scroll = ctk.CTkScrollbar(right_panel, orientation="vertical",   command=self.canvas.yview)
-        h_scroll = ctk.CTkScrollbar(right_panel, orientation="horizontal",  command=self.canvas.xview)
+        v_scroll = ctk.CTkScrollbar(right_panel, orientation="vertical",  command=self.canvas.yview)
+        h_scroll = ctk.CTkScrollbar(right_panel, orientation="horizontal", command=self.canvas.xview)
         v_scroll.grid(row=0, column=1, sticky="ns")
         h_scroll.grid(row=1, column=0, sticky="ew")
         self.canvas.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
 
+        self._placeholder_text = (
+            "Завантажте графічний файл для початку роботи\n\n"
+            "Ctrl + Коліщатко :   Масштаб\n"
+            "ЛКМ (затиснути) :    Переміщення\n"
+            "Коліщатко :              Прокрутка"
+        )
         self.placeholder = self.canvas.create_text(
-            400, 300, fill="gray", justify="center", font=("Segoe UI", 13),
-            text="Завантажте графічний файл для початку роботи\n\n"
-                 "Ctrl + Колесо миші — Масштабування\n"
-                 "ЛКМ (затиснути) — Переміщення картинки"
+            400, 300, fill="gray", justify="center",
+            font=("Segoe UI", 13), text=self._placeholder_text
         )
 
-        self.canvas.bind("<Configure>",    self._on_canvas_resize)
-        self.bind("<MouseWheel>",          self._on_mouse_wheel)
+        self.canvas.bind("<Configure>",     self._on_canvas_resize)
+        self.bind("<MouseWheel>",           self._on_mouse_wheel)
         self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
-        self.canvas.bind("<B1-Motion>",    self._on_drag_motion)
+        self.canvas.bind("<B1-Motion>",     self._on_drag_motion)
 
-        self._build_overlay_panel()
+        self._build_zoom_panel()
 
-    def _build_overlay_panel(self):
+    def _build_zoom_panel(self):
         self._info_expanded = False
 
-        self.overlay_border = tk.Frame(self.canvas, bg="#444455")
-        self.overlay_frame  = ctk.CTkFrame(
-            self.overlay_border, corner_radius=0,
-            fg_color=("#e9ecef", "#1e1e2d")
+        self.zoom_panel = ctk.CTkFrame(
+            self.canvas,
+            corner_radius=0,
+            fg_color=("#e9ecef", "#1e1e2d"),
+            border_width=0,
         )
-        self.overlay_frame.pack(fill="both", expand=True, padx=1, pady=1)
 
-        self.overlay_header = ctk.CTkFrame(self.overlay_frame, fg_color="transparent")
-        self.overlay_header.pack(fill="x", padx=8, pady=5)
+        header = ctk.CTkFrame(self.zoom_panel, fg_color="transparent", corner_radius=0)
+        header.pack(fill="x", padx=8, pady=(6, 4))
 
         self.zoom_label = ctk.CTkLabel(
-            self.overlay_header, text="100%",
+            header, text="100%",
             font=("Consolas", 13, "bold"), text_color=("#333", "#ccc")
         )
-        self.zoom_label.pack(side="left", padx=(5, 10))
+        self.zoom_label.pack(side="left", padx=(4, 8))
 
         self.toggle_info_btn = ctk.CTkButton(
-            self.overlay_header, text="▾", width=24, height=24,
+            header, text="▾", width=24, height=22,
             fg_color="transparent", hover_color=("#d0d0d0", "#2a2a3a"),
             text_color=("black", "white"), font=("Segoe UI", 10),
+            corner_radius=0,
             command=self._toggle_info_panel
         )
         self.toggle_info_btn.pack(side="right")
 
-        self.overlay_content = ctk.CTkFrame(self.overlay_frame, fg_color="transparent")
+        self.zoom_content = ctk.CTkFrame(self.zoom_panel, fg_color="transparent", corner_radius=0)
 
         ctk.CTkLabel(
-            self.overlay_content,
-            text="Ctrl + Коліщатко :   Масштаб\nЛКМ (затиснути) :    Переміщення\nКоліщатко :              Прокрутка",
-            justify="left", font=("Segoe UI", 11), text_color="gray"
-        ).pack(padx=12, pady=(0, 10), anchor="w")
+            self.zoom_content,
+            text=(
+                "Ctrl + Коліщатко :   Масштаб\n"
+                "ЛКМ (затиснути) :    Переміщення\n"
+                "Коліщатко :              Прокрутка"
+            ),
+            justify="left", font=("Segoe UI", 10), text_color="gray"
+        ).pack(padx=12, pady=(2, 6), anchor="w")
 
-        self.reset_zoom_btn = ctk.CTkButton(
-            self.overlay_content, text="Скинути",
-            height=26, font=("Segoe UI", 11),
+        ctk.CTkButton(
+            self.zoom_content, text="Скинути",
+            height=26, font=("Segoe UI", 10),
             fg_color=("#3a0ca3", "#3f37c9"),
             hover_color=("#d0d0d0", "#333344"),
+            corner_radius=0,
             command=self._reset_zoom
-        )
-        self.reset_zoom_btn.pack(padx=12, pady=(0, 10), fill="x")
+        ).pack(padx=12, pady=(0, 10), fill="x")
 
     # Допоміжні методи UI
 
@@ -387,10 +487,10 @@ class ComicsTranslatorApp(ctk.CTk):
         self._info_expanded = not self._info_expanded
         if self._info_expanded:
             self.toggle_info_btn.configure(text="▲")
-            self.overlay_content.pack(fill="x")
+            self.zoom_content.pack(fill="x")
         else:
-            self.toggle_info_btn.configure(text="▼")
-            self.overlay_content.pack_forget()
+            self.toggle_info_btn.configure(text="▾")
+            self.zoom_content.pack_forget()
 
     def _update_zoom_label(self):
         self.zoom_label.configure(text=f"{int(self.image_state.zoom * 100)}%")
@@ -399,8 +499,6 @@ class ComicsTranslatorApp(ctk.CTk):
         if not self.image_state.loaded:
             return
         self.image_state.zoom = 1.0
-        self.canvas.xview_moveto(0)
-        self.canvas.yview_moveto(0)
         self._redraw()
 
     # Перемикання вкладок
@@ -427,23 +525,93 @@ class ComicsTranslatorApp(ctk.CTk):
         url = self.url_entry.get().strip()
         if url:
             self.pipeline_state.reset()
-            self.url_status.configure(text="URL збережено", text_color="#4cc9f0")
+            log.info("URL сервера оновлено: %s", url)
+            self.url_status.configure(text="Посилання збережено", text_color="#4cc9f0")
         else:
-            self.url_status.configure(text="Введіть URL", text_color="#e63946")
+            self.url_status.configure(text="Введіть посилання на сервер", text_color="#e63946")
 
     def _load_config_url(self):
         if config.COLAB_API_URL:
             self.url_entry.insert(0, config.COLAB_API_URL)
 
+    def _on_mode_toggle(self):
+        self._advanced_mode = self.mode_var.get()
+        if self._advanced_mode:
+            self.simple_panel.pack_forget()
+            self.advanced_panel.pack(fill="x", before=self.btn_open)
+        else:
+            self.advanced_panel.pack_forget()
+            self.simple_panel.pack(fill="x", before=self.btn_open)
+        self._sync_buttons_to_state()
+
+    def _open_log_window(self):
+        win = ctk.CTkToplevel(self)
+        win.title("Лог застосунку")
+        win.geometry("700x400")
+        win.grab_set()
+
+        text = scrolledtext.ScrolledText(
+            win, font=("Consolas", 11),
+            bg="#1a1a2e", fg="#c9d1d9",
+            insertbackground="white",
+            state="disabled", wrap="word"
+        )
+        text.pack(fill="both", expand=True, padx=10, pady=10)
+
+        if _log_handler:
+            _log_handler.attach(text)
+
+        ctk.CTkButton(
+            win, text="Закрити", height=32,
+            command=win.destroy
+        ).pack(pady=(0, 10))
+
+    # Блокування / розблокування кнопок
+
+    def _lock_ui(self):
+        for btn in [self.btn_open, self.btn_ocr, self.btn_trans, self.btn_run, self.btn_save]:
+            btn.configure(state="disabled")
+
+    def _unlock_ui_after_ocr(self):
+        self.btn_open.configure(state="normal")
+        self.btn_ocr.configure(state="normal")
+        if self.bubbles:
+            self.btn_trans.configure(state="normal")
+
+    def _unlock_ui_after_translate(self):
+        self.btn_open.configure(state="normal")
+        self.btn_ocr.configure(state="normal")
+        self.btn_trans.configure(state="normal")
+        self.btn_run.configure(state="normal")
+        self.btn_save.configure(state="normal")
+        self.toggle.configure(state="normal", button_color=("#ffffff", "#cccccc"))
+
+    def _unlock_ui_after_run(self):
+        self.btn_open.configure(state="normal")
+        self.btn_run.configure(state="normal")
+        self.btn_save.configure(state="normal")
+        self.toggle.configure(state="normal", button_color=("#ffffff", "#cccccc"))
+
+    def _sync_buttons_to_state(self):
+        """Синхронізує стан кнопок після перемикання режиму."""
+        if not self.image_state.loaded:
+            return
+        if self._advanced_mode:
+            self.btn_ocr.configure(state="normal")
+            self.btn_run.configure(state="disabled")
+        else:
+            self.btn_run.configure(state="normal")
+            self.btn_ocr.configure(state="disabled")
+
     # Керування фоновими завданнями
 
-    def _reset_taskbar(self, status: str = "Ready"):
+    def _reset_taskbar(self, status: str = "Готовий до роботи!"):
         self.task_state.stop()
         if self.task_state.tick_id is not None:
             self.after_cancel(self.task_state.tick_id)
             self.task_state.tick_id = None
-        self.status_label.configure(text=status,  text_color="#a2a2d0")
-        self.timer_label.configure(text="",        text_color="#a2a2d0")
+        self.status_label.configure(text=status, text_color="#a2a2d0")
+        self.timer_label.configure(text="",      text_color="#a2a2d0")
         self.spinner_label.configure(image=None, text="")
 
     def _start_task(self, message: str):
@@ -456,6 +624,7 @@ class ComicsTranslatorApp(ctk.CTk):
         timer_text = self.task_state.elapsed_formatted if show_timer else ""
 
         if error_msg:
+            log.error(error_msg)
             self.status_label.configure(text=f"Помилка: {error_msg}", text_color="#ef233c")
             self.timer_label.configure(text=timer_text,                text_color="#ef233c")
             if self.icon_error:
@@ -463,6 +632,8 @@ class ComicsTranslatorApp(ctk.CTk):
             else:
                 self.spinner_label.configure(image=None, text="!")
         else:
+            if success_msg:
+                log.info(success_msg)
             self.status_label.configure(text=success_msg, text_color="#a2a2d0")
             self.timer_label.configure(text=timer_text,   text_color="#a2a2d0")
             if self.icon_success:
@@ -493,6 +664,7 @@ class ComicsTranslatorApp(ctk.CTk):
         if not path:
             return
 
+        log.info("Завантаження: %s", path)
         self._reset_taskbar("Завантаження...")
         self.image_state.reset()
         self.image_state.path     = path
@@ -501,76 +673,127 @@ class ComicsTranslatorApp(ctk.CTk):
 
         self.toggle_var.set(False)
         self.canvas.delete(self.placeholder)
-        self.canvas.xview_moveto(0)
-        self.canvas.yview_moveto(0)
         self._render_image(self.image_state.original)
 
-        self.overlay_border.place(relx=1.0, rely=0.0, anchor="ne", x=-25, y=20)
+        self.zoom_panel.place(relx=1.0, rely=0.0, anchor="ne", x=-25, y=20)
         self._update_zoom_label()
 
-        self.btn_ocr.configure(state="normal")
         self.btn_reset.configure(state="normal")
         self.btn_trans.configure(state="disabled")
         self.toggle.configure(state="disabled", button_color=("#a0a0a0", "#555555"))
         self.btn_save.configure(state="disabled")
 
+        if self._advanced_mode:
+            self.btn_ocr.configure(state="normal")
+            self.btn_run.configure(state="disabled")
+        else:
+            self.btn_run.configure(state="normal")
+            self.btn_ocr.configure(state="disabled")
+
         self._finish_task(success_msg=f"Завантажено: {os.path.basename(path)}", show_timer=False)
         self._set_report("")
+
+    # Простий режим
+
+    def run_full_pipeline(self):
+        if not self.image_state.loaded:
+            return
+        self._start_task("Розпізнавання та переклад...")
+        self._lock_ui()
+        threading.Thread(target=self._full_pipeline_worker, daemon=True).start()
+
+    def _full_pipeline_worker(self):
+        try:
+            self._ensure_pipeline()
+            log.info("OCR запущено")
+            self.bubbles = self.pipeline_state.ocr.extract(self.image_state.path)
+
+            if not self.bubbles:
+                self.after(0, lambda: self._finish_task(error_msg="Текстових блоків не знайдено."))
+                self.after(0, lambda: self.btn_run.configure(state="normal"))
+                self.after(0, lambda: self.btn_open.configure(state="normal"))
+                return
+
+            log.info("Знайдено %d блоків, запуск перекладу...", len(self.bubbles))
+            self.bubbles = self.pipeline_state.translator.translate_bubbles(self.bubbles)
+            self._generate_overlay()
+
+            lines  = [
+                f"[{i}] EN: {b.get('text', '')}\n     UK: {b.get('translation', '')}\n"
+                for i, b in enumerate(self.bubbles, 1)
+            ]
+            report = "\n".join(lines)
+            count  = len(self.bubbles)
+            self.after(0, lambda c=count: self._finish_task(success_msg=f"Готово! Перекладено {c} блоків."))
+            self.after(0, lambda r=report: self._set_report(r))
+            self.after(0, self._unlock_ui_after_run)
+            if self.toggle_var.get():
+                self.after(0, self.toggle_overlay)
+        except Exception as exc:
+            self.after(0, lambda e=exc: self._finish_task(error_msg=str(e)))
+            self.after(0, lambda: self.btn_run.configure(state="normal"))
+            self.after(0, lambda: self.btn_open.configure(state="normal"))
+
+    # Розширений режим: OCR
 
     def run_ocr(self):
         if not self.image_state.loaded:
             return
         self._start_task("Розпізнавання тексту...")
-        self.btn_ocr.configure(state="disabled")
+        self._lock_ui()
         threading.Thread(target=self._ocr_worker, daemon=True).start()
 
     def _ocr_worker(self):
         try:
             self._ensure_pipeline()
+            log.info("OCR запущено")
             self.bubbles = self.pipeline_state.ocr.extract(self.image_state.path)
 
             if not self.bubbles:
                 self.after(0, lambda: self._finish_task(error_msg="Текстових блоків не знайдено."))
+                self.after(0, self._unlock_ui_after_ocr)
                 return
 
-            report = "\n".join(f"[{i}] {b.get('text', '')}" for i, b in enumerate(self.bubbles, 1))
             count  = len(self.bubbles)
-            self.after(0, lambda c=count: self._finish_task(success_msg=f"Розпізнано {c} баблів"))
+            report = "\n".join(f"[{i}] {b.get('text', '')}" for i, b in enumerate(self.bubbles, 1))
+            log.info("Розпізнано %d блоків", count)
+            self.after(0, lambda c=count: self._finish_task(success_msg=f"Розпізнано {c} блоків."))
             self.after(0, lambda r=report: self._set_report(r))
-            self.after(0, lambda: self.btn_trans.configure(state="normal"))
+            self.after(0, self._unlock_ui_after_ocr)
         except Exception as exc:
             self.after(0, lambda e=exc: self._finish_task(error_msg=str(e)))
-        finally:
-            self.after(0, lambda: self.btn_ocr.configure(state="normal"))
+            self.after(0, self._unlock_ui_after_ocr)
+
+    # Розширений режим: переклад
 
     def run_translate(self):
         if not self.bubbles:
             return
-        self._start_task("Переклад через сервер Dragoman...")
-        self.btn_trans.configure(state="disabled")
+        self._start_task("Запуск перекладу...")
+        self._lock_ui()
         threading.Thread(target=self._translate_worker, daemon=True).start()
 
     def _translate_worker(self):
         try:
             self._ensure_pipeline()
+            log.info("Переклад запущено")
             self.bubbles = self.pipeline_state.translator.translate_bubbles(self.bubbles)
             self._generate_overlay()
 
-            lines = [
+            lines  = [
                 f"[{i}] EN: {b.get('text', '')}\n     UK: {b.get('translation', '')}\n"
                 for i, b in enumerate(self.bubbles, 1)
             ]
             report = "\n".join(lines)
-            self.after(0, lambda: self._finish_task(success_msg="Переклад завершено"))
+            log.info("Переклад завершено")
+            self.after(0, lambda: self._finish_task(success_msg="Переклад завершено."))
             self.after(0, lambda r=report: self._set_report(r))
-            self.after(0, lambda: self.toggle.configure(state="normal", button_color=("#ffffff", "#cccccc")))
-            self.after(0, lambda: self.btn_save.configure(state="normal"))
+            self.after(0, self._unlock_ui_after_translate)
             if self.toggle_var.get():
                 self.after(0, self.toggle_overlay)
         except Exception as exc:
             self.after(0, lambda e=exc: self._finish_task(error_msg=str(e)))
-        finally:
-            self.after(0, lambda: self.btn_trans.configure(state="normal"))
+            self.after(0, self._unlock_ui_after_translate)
 
     def save_result(self):
         img = self.image_state.overlay or self.image_state.original
@@ -579,7 +802,7 @@ class ComicsTranslatorApp(ctk.CTk):
 
         path = filedialog.asksaveasfilename(
             title="Зберегти результат",
-            initialfile="translated_comic.png",
+            initialfile="translated_comic_page.png",
             defaultextension=".png",
             filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg")]
         )
@@ -590,6 +813,7 @@ class ComicsTranslatorApp(ctk.CTk):
         try:
             out = img.convert("RGB") if path.lower().endswith((".jpg", ".jpeg")) else img
             out.save(path)
+            log.info("Збережено: %s", path)
             self._finish_task(success_msg=f"Збережено: {os.path.basename(path)}", show_timer=False)
         except Exception as exc:
             self._finish_task(error_msg=str(exc), show_timer=False)
@@ -600,24 +824,25 @@ class ComicsTranslatorApp(ctk.CTk):
         self.bubbles = []
         self.toggle_var.set(False)
 
-        self.overlay_border.place_forget()
+        self.zoom_panel.place_forget()
         self.canvas.delete("all")
         self.canvas.xview_moveto(0)
         self.canvas.yview_moveto(0)
-
+        cx = max(400, self.canvas.winfo_width()  // 2)
+        cy = max(300, self.canvas.winfo_height() // 2)
         self.placeholder = self.canvas.create_text(
-            400, 300, fill="gray", justify="center", font=("Segoe UI", 13),
-            text="Завантажте графічний файл для початку роботи\n\n"
-                 "Ctrl + Колесо миші — Масштабування\n"
-                 "ЛКМ (затиснути) — Переміщення картинки"
+            cx, cy, fill="gray", justify="center",
+            font=("Segoe UI", 13), text=self._placeholder_text
         )
 
-        for btn in [self.btn_ocr, self.btn_trans, self.btn_save, self.btn_reset]:
+        for btn in [self.btn_ocr, self.btn_trans, self.btn_run, self.btn_save, self.btn_reset]:
             btn.configure(state="disabled")
+        self.btn_open.configure(state="normal")
         self.toggle.configure(state="disabled", button_color=("#a0a0a0", "#555555"))
 
-        self._reset_taskbar("Ready")
+        self._reset_taskbar("Готовий до роботи!")
         self._set_report("")
+        log.info("Стан скинуто")
 
     # Внутрішні методи
 
@@ -626,7 +851,8 @@ class ComicsTranslatorApp(ctk.CTk):
             return
         url = self.url_entry.get().strip()
         if not url:
-            raise ValueError("Не вказано URL Colab-сервера.")
+            raise ValueError("Не вказано посилання на сервер.")
+        log.info("Ініціалізація пайплайну: %s", url)
         self.pipeline_state.initialize(url)
 
     def toggle_overlay(self):
@@ -664,14 +890,14 @@ class ComicsTranslatorApp(ctk.CTk):
         resized = img.resize((nw, nh), Image.Resampling.LANCZOS)
         self._tk_image = ImageTk.PhotoImage(resized)
 
+        x = max(cw // 2, nw // 2)
+        y = max(ch // 2, nh // 2)
+
         self.canvas.delete("img")
-        self.canvas.create_image(
-            cw // 2, max(ch // 2, nh // 2),
-            anchor="center", image=self._tk_image, tags="img"
-        )
-        self.canvas.config(scrollregion=self.canvas.bbox("all"))
+        self.canvas.create_image(x, y, anchor="center", image=self._tk_image, tags="img")
+        self.canvas.config(scrollregion=(0, 0, max(cw, nw), max(ch, nh)))
         self._update_zoom_label()
-        self.overlay_border.lift()
+        self.zoom_panel.lift()
 
     def _on_canvas_resize(self, event):
         if not self.image_state.loaded:

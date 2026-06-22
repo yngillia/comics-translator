@@ -1,4 +1,5 @@
 import os
+import sys
 
 # Сервер
 COLAB_API_URL  = "https://thrower-sturdily-divisive.ngrok-free.dev"
@@ -10,8 +11,9 @@ MAX_LENGTH     = 128
 MAX_NEW_TOKENS = 128
 
 # Шрифт оверлею
-FONT_PATH_WIN   = "fonts/Comic_Sans_MS.ttf"
-FONT_PATH_LINUX = "DejaVuSans.ttf"
+BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+FONT_PATH_WIN   = os.path.join(BASE_DIR, "fonts", "Comic_Sans_MS.ttf")
+FONT_PATH_LINUX = os.path.join(BASE_DIR, "fonts", "DejaVuSans.ttf")
 FONT_SIZE_MAX   = 55
 FONT_SIZE_MIN   = 12
 
@@ -36,13 +38,13 @@ PAD_Y_RATIO = 0.04
 OVERLAY_TYPES = {"dialogue", "narration", "thought", "caption"}
 
 # Шляхи до ресурсів
-ASSETS_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-SPINNER_GIF     = os.path.join(ASSETS_DIR, "spinner.gif")
-APP_ICON        = os.path.join(ASSETS_DIR, "app_icon.ico")
-ICON_SETTINGS   = os.path.join(ASSETS_DIR, "settings.png")
-ICON_BACK       = os.path.join(ASSETS_DIR, "back_arrow.png")
-ICON_SUCCESS    = os.path.join(ASSETS_DIR, "success.png")
-ICON_ERROR      = os.path.join(ASSETS_DIR, "error.png")
+ASSETS_DIR    = os.path.join(BASE_DIR, "data")
+SPINNER_GIF   = os.path.join(ASSETS_DIR, "spinner.gif")
+APP_ICON      = os.path.join(ASSETS_DIR, "app_icon.ico")
+ICON_SETTINGS = os.path.join(ASSETS_DIR, "settings.png")
+ICON_BACK     = os.path.join(ASSETS_DIR, "back_arrow.png")
+ICON_SUCCESS  = os.path.join(ASSETS_DIR, "success.png")
+ICON_ERROR    = os.path.join(ASSETS_DIR, "error.png")
 
 # Вікно
 WINDOW_TITLE    = "Comics Translator"
