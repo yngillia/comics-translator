@@ -461,7 +461,7 @@ class ComicsTranslatorApp(ctk.CTk):
             height=26, font=("Segoe UI", 10),
             fg_color=("#3a0ca3", "#3f37c9"),
             hover_color=("#d0d0d0", "#333344"),
-            corner_radius=0,
+                corner_radius=6,
             command=self._reset_zoom
         ).pack(padx=12, pady=(0, 10), fill="x")
 
@@ -489,7 +489,7 @@ class ComicsTranslatorApp(ctk.CTk):
             self.toggle_info_btn.configure(text="▲")
             self.zoom_content.pack(fill="x")
         else:
-            self.toggle_info_btn.configure(text="▾")
+            self.toggle_info_btn.configure(text="▼")
             self.zoom_content.pack_forget()
 
     def _update_zoom_label(self):
